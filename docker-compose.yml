@@ -1,0 +1,92 @@
+name: roomforge
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: roomforge
+      POSTGRES_DB: roomforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U roomforge -d roomforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    build:
+      context: .
+      dockerfile: apps/api/Minio.Dockerfile
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-roomforge}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgres://roomforge:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/roomforge
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_PUBLIC_ENDPOINT: ${STORAGE_PUBLIC_ENDPOINT:-http://localhost:9000}
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-roomforge}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-roomforge-assets}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      OPTIMIZER_SCRIPT: /app/tools/optimize-model.mjs
+      ASSET_MAX_BYTES: ${ASSET_MAX_BYTES:-20971520}
+      ASSET_MAX_TRIANGLES: ${ASSET_MAX_TRIANGLES:-150000}
+      API_HOST: 0.0.0.0
+      API_PORT: 8080
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RUST_LOG: ${RUST_LOG:-roomforge_api=info,tower_http=info}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  minio-data:
+

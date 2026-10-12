@@ -1,0 +1,70 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: roomforge
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: roomforge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U roomforge -d roomforge"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://roomforge:ci-password@localhost:5432/roomforge
+      JWT_SECRET: ci-only-secret-at-least-thirty-two-characters
+      CORS_ORIGIN: http://localhost:5173
+      API_HOST: 127.0.0.1
+      API_PORT: 8080
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose config --quiet
+      - run: docker compose up --build --detach --wait --wait-timeout 180
+      - run: curl --fail http://localhost:8080/health && curl --fail http://localhost:5173/health
+      - name: Authentication smoke test
+        run: |
+          response=$(curl --fail --silent --show-error http://localhost:5173/api/v1/auth/register -H 'Content-Type: application/json' --data '{"email":"ci@example.com","password":"RoomForge-ci-password-123"}')
+          token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<< "$response")
+          curl --fail --silent --show-error http://localhost:5173/api/v1/auth/me -H "Authorization: Bearer $token"
+      - name: Container logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop services
+        if: always()
+        run: docker compose down --volumes
+
+
